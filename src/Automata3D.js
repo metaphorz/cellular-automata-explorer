@@ -21,6 +21,7 @@ export default function Automata3D({
   const [localGrid, setLocalGrid] = useState(
     Array.from({ length: resolution }, () => Array(resolution).fill(0))
   );
+  const [showLight, setShowLight] = useState(false);
 
   // Reset grid when resolution changes
   useEffect(() => {
@@ -65,14 +66,46 @@ export default function Automata3D({
     // Lighting
     const ambient = new THREE.AmbientLight(0xffffff, 0.7);
     scene.add(ambient);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
-    dir.position.set(1, 2, 2);
-    scene.add(dir);
+    let dir;
+    let shadowLight;
+    let ground;
+    if (showLight) {
+      // Add a side light with shadows
+      shadowLight = new THREE.DirectionalLight(0xffffff, 1.0);
+      shadowLight.position.set(resolution * 2, resolution * 3, resolution * 2);
+      shadowLight.castShadow = true;
+      shadowLight.shadow.mapSize.width = 2048;
+      shadowLight.shadow.mapSize.height = 2048;
+      shadowLight.shadow.camera.near = 0.5;
+      shadowLight.shadow.camera.far = resolution * 10;
+      shadowLight.shadow.camera.left = -resolution * 12;
+      shadowLight.shadow.camera.right = resolution * 12;
+      shadowLight.shadow.camera.top = resolution * 12;
+      shadowLight.shadow.camera.bottom = -resolution * 12;
+      shadowLight.shadow.bias = -0.001;
+      scene.add(shadowLight);
+      // Add ground plane to catch shadows
+      const groundGeo = new THREE.PlaneGeometry(resolution * 20, resolution * 20);
+      const groundMat = new THREE.MeshPhongMaterial({ color: 0x888888, depthWrite: false });
+      ground = new THREE.Mesh(groundGeo, groundMat);
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = 0;
+      ground.receiveShadow = true;
+      scene.add(ground);
+    } else {
+      dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(1, 2, 2);
+      scene.add(dir);
+    }
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     rendererRef.current = renderer;
+    renderer.shadowMap.enabled = showLight;
+    if (showLight) {
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     mountRef.current.appendChild(renderer.domElement);
 
     // Grid of cubes
@@ -85,9 +118,13 @@ export default function Automata3D({
         const geometry = new THREE.BoxGeometry(cellSize, flatHeight, cellSize);
         const material = new THREE.MeshPhongMaterial({ color: 0x3399ff });
         const cube = new THREE.Mesh(geometry, material);
+        if (showLight) {
+          cube.castShadow = true;
+          cube.receiveShadow = true;
+        }
         cube.position.set(
           x * (cellSize + gap) - (resolution * (cellSize + gap)) / 2 + cellSize / 2,
-          flatHeight / 2,
+          showLight ? 10 : flatHeight / 2,
           z * (cellSize + gap) - (resolution * (cellSize + gap)) / 2 + cellSize / 2
         );
         scene.add(cube);
@@ -152,8 +189,21 @@ export default function Automata3D({
 
     // Animation/render loop
     let animId;
+    let orbitAngle = 0;
     function animate() {
       if (controls) controls.update();
+      // Animate light orbit when enabled
+      if (showLight && shadowLight) {
+        orbitAngle += 0.01; // Speed of orbit
+        const radius = resolution * 3;
+        shadowLight.position.set(
+          Math.cos(orbitAngle) * radius,
+          resolution * 3,
+          Math.sin(orbitAngle) * radius
+        );
+        shadowLight.target.position.set(0, 0, 0);
+        shadowLight.target.updateMatrixWorld();
+      }
       renderer.render(scene, camera);
       animId = requestAnimationFrame(animate);
     }
@@ -239,6 +289,12 @@ export default function Automata3D({
           style={{ marginLeft: 8 }}
         >
           Clear
+        </button>
+        <button
+          onClick={() => setShowLight(l => !l)}
+          style={{ marginLeft: 8 }}
+        >
+          {showLight ? 'Light On' : 'Light Off'}
         </button>
       </div>
       <div ref={mountRef} style={{ width: 600, height: 600, margin: '0 auto', cursor: isRunning ? 'grab' : 'pointer' }} />
