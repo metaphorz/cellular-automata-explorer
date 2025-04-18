@@ -4,6 +4,34 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
 import { stepAutomaton } from './CellularAutomata';
 
+// Helper to create a shadow-casting directional light for the scene
+function createShadowLight(resolution) {
+  const light = new THREE.DirectionalLight(0xffffff, 1.0);
+  light.position.set(resolution * 2, resolution * 3, resolution * 2);
+  light.castShadow = true;
+  light.shadow.mapSize.width = 2048;
+  light.shadow.mapSize.height = 2048;
+  light.shadow.camera.near = 0.5;
+  light.shadow.camera.far = resolution * 10;
+  light.shadow.camera.left = -resolution * 12;
+  light.shadow.camera.right = resolution * 12;
+  light.shadow.camera.top = resolution * 12;
+  light.shadow.camera.bottom = -resolution * 12;
+  light.shadow.bias = -0.001;
+  return light;
+}
+
+// Helper to create a ground plane that receives shadows
+function createGroundPlane(resolution) {
+  const groundGeo = new THREE.PlaneGeometry(resolution * 20, resolution * 20);
+  const groundMat = new THREE.MeshPhongMaterial({ color: 0x888888, depthWrite: false });
+  const ground = new THREE.Mesh(groundGeo, groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0;
+  ground.receiveShadow = true;
+  return ground;
+}
+
 export default function Automata3D({
   resolution = 32,
   rule = 'life',
@@ -23,7 +51,7 @@ export default function Automata3D({
   );
   const [showLight, setShowLight] = useState(false);
 
-  // Reset grid when resolution changes
+  // When the grid resolution changes, reset the local grid and stop the simulation
   useEffect(() => {
     setLocalGrid(Array.from({ length: resolution }, () => Array(resolution).fill(0)));
     setIsRunning(false);
@@ -31,10 +59,10 @@ export default function Automata3D({
   const [isRunning, setIsRunning] = useState(false);
   const intervalRef = useRef(null);
 
-  // Sync external grid (for Clear)
+  // Synchronize the local grid with an externally provided grid (e.g., when clearing)
   useEffect(() => {
     if (externalGrid) {
-      // If externalGrid is a flat array, convert to 2D
+      // If externalGrid is a flat array, convert to 2D array
       if (Array.isArray(externalGrid) && typeof externalGrid[0] === 'number') {
         const newGrid = [];
         for (let i = 0; i < resolution; i++) {
@@ -42,6 +70,7 @@ export default function Automata3D({
         }
         setLocalGrid(newGrid);
       } else if (Array.isArray(externalGrid) && Array.isArray(externalGrid[0])) {
+        // If already 2D, clone the array to prevent mutation
         setLocalGrid(externalGrid.map(row => row.slice()));
       }
     }
@@ -49,7 +78,8 @@ export default function Automata3D({
   const isDrawingRef = useRef(false);
 
   useEffect(() => {
-    // Scene setup
+    // --- THREE.js Scene Setup ---
+    // Set up the 3D scene, camera, and grid helper
     const width = 600;
     const height = 600;
     const scene = new THREE.Scene();
@@ -57,48 +87,35 @@ export default function Automata3D({
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 2000);
     camera.position.set(resolution * 1.2, resolution * 1.2, resolution * 1.2);
     camera.lookAt(0, 0, 0);
-    // Add a grid helper for orientation
+    // Add a grid helper for orientation reference
     const gridHelper = new THREE.GridHelper(resolution * 14, resolution, 0x888888, 0xcccccc);
     scene.add(gridHelper);
     sceneRef.current = scene;
     cameraRef.current = camera;
 
-    // Lighting
+    // --- Lighting Setup ---
+    // Add ambient light for general illumination
     const ambient = new THREE.AmbientLight(0xffffff, 0.7);
     scene.add(ambient);
     let dir;
     let shadowLight;
     let ground;
     if (showLight) {
-      // Add a side light with shadows
-      shadowLight = new THREE.DirectionalLight(0xffffff, 1.0);
-      shadowLight.position.set(resolution * 2, resolution * 3, resolution * 2);
-      shadowLight.castShadow = true;
-      shadowLight.shadow.mapSize.width = 2048;
-      shadowLight.shadow.mapSize.height = 2048;
-      shadowLight.shadow.camera.near = 0.5;
-      shadowLight.shadow.camera.far = resolution * 10;
-      shadowLight.shadow.camera.left = -resolution * 12;
-      shadowLight.shadow.camera.right = resolution * 12;
-      shadowLight.shadow.camera.top = resolution * 12;
-      shadowLight.shadow.camera.bottom = -resolution * 12;
-      shadowLight.shadow.bias = -0.001;
+      // Add a directional light that orbits the grid and casts shadows
+      shadowLight = createShadowLight(resolution);
       scene.add(shadowLight);
-      // Add ground plane to catch shadows
-      const groundGeo = new THREE.PlaneGeometry(resolution * 20, resolution * 20);
-      const groundMat = new THREE.MeshPhongMaterial({ color: 0x888888, depthWrite: false });
-      ground = new THREE.Mesh(groundGeo, groundMat);
-      ground.rotation.x = -Math.PI / 2;
-      ground.position.y = 0;
-      ground.receiveShadow = true;
+      // Add a ground plane to receive shadows from cubes
+      ground = createGroundPlane(resolution);
       scene.add(ground);
+    }
     } else {
       dir = new THREE.DirectionalLight(0xffffff, 0.6);
       dir.position.set(1, 2, 2);
       scene.add(dir);
     }
 
-    // Renderer
+    // --- Renderer Setup ---
+    // Create and configure the WebGL renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(width, height);
     rendererRef.current = renderer;
@@ -108,7 +125,8 @@ export default function Automata3D({
     }
     mountRef.current.appendChild(renderer.domElement);
 
-    // Grid of cubes
+    // --- Grid of Cubes ---
+    // Create a grid of cubes representing the automaton cells
     const cubes = [];
     const cellSize = 14;
     const gap = 2; // spacing between cubes
@@ -133,11 +151,13 @@ export default function Automata3D({
     }
     cubesRef.current = cubes;
 
-    // Mouse interaction for editing
+    // --- Mouse Interaction for Editing ---
+    // Allow users to select and modify cell states by clicking/dragging on cubes
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
     function getIntersects(event) {
+      // Convert mouse event to normalized device coordinates and find intersected cubes
       const rect = renderer.domElement.getBoundingClientRect();
       mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -146,15 +166,18 @@ export default function Automata3D({
     }
 
     function handlePointerDown(event) {
+      // Start drawing (cell selection)
       isDrawingRef.current = true;
       handlePointerMove(event);
     }
 
     function handlePointerUp() {
+      // Stop drawing
       isDrawingRef.current = false;
     }
 
     function handlePointerMove(event) {
+      // Set cell state when dragging or clicking
       if (!isDrawingRef.current) return;
       const intersects = getIntersects(event);
       if (intersects.length > 0) {
